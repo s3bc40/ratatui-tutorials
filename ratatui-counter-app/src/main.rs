@@ -1,5 +1,9 @@
-use std::io;
+// use std::io;
 
+use color_eyre::{
+    Result,
+    eyre::{WrapErr, bail},
+};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -11,7 +15,7 @@ use ratatui::{
     widgets::{Block, Paragraph, Widget},
 };
 
-fn main() -> io::Result<()> {
+fn main() -> Result<()> {
     // Note: defers propagating the return of App::run()’s result until after the terminal is restored
     let mut terminal = ratatui::init();
     let app_result = App::default().run(&mut terminal);
@@ -27,10 +31,10 @@ pub struct App {
 
 // Each iteration of the loop draws a single frame by calling Terminal::draw() and then updates the state of the app.
 impl App {
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events()?;
+            self.handle_events().wrap_err("handle events failed")?;
         }
         Ok(())
     }
@@ -40,25 +44,26 @@ impl App {
     }
 
     /// updates the application's state based on user input
-    fn handle_events(&mut self) -> io::Result<()> {
+    fn handle_events(&mut self) -> Result<()> {
         match event::read()? {
             // it's important to check that the event is a key press event as
             // crossterm also emits key release and repeat events on Windows.
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.handle_key_event(key_event)
-            }
-            _ => {}
-        };
-        Ok(())
+            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => self
+                .handle_key_event(key_event)
+                .wrap_err_with(|| format!("handling key event failed:\n{key_event:#?}")),
+            _ => Ok(()),
+        }
     }
 
-    fn handle_key_event(&mut self, key_event: KeyEvent) {
+    fn handle_key_event(&mut self, key_event: KeyEvent) -> Result<()> {
         match key_event.code {
             KeyCode::Char('q') => self.exit(),
-            KeyCode::Left => self.decrement_counter(),
-            KeyCode::Right => self.increment_counter(),
+            KeyCode::Left => self.decrement_counter()?,
+            KeyCode::Right => self.increment_counter()?,
             _ => {}
         }
+
+        Ok(())
     }
 
     fn exit(&mut self) {
@@ -66,12 +71,18 @@ impl App {
     }
 
     // Notes: app might use saturating_sub and saturating_add to avoid panics
-    fn increment_counter(&mut self) {
+    fn increment_counter(&mut self) -> Result<()> {
         self.counter += 1;
+        if self.counter > 25 {
+            bail!("counter overflow");
+        }
+
+        Ok(())
     }
 
-    fn decrement_counter(&mut self) {
+    fn decrement_counter(&mut self) -> Result<()> {
         self.counter -= 1;
+        Ok(())
     }
 }
 
@@ -134,18 +145,39 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_event() -> io::Result<()> {
+    fn handle_key_event() -> Result<()> {
         let mut app = App::default();
-        app.handle_key_event(KeyCode::Right.into());
+        app.handle_key_event(KeyCode::Right.into()).unwrap();
         assert_eq!(app.counter, 1);
 
-        app.handle_key_event(KeyCode::Left.into());
+        app.handle_key_event(KeyCode::Left.into()).unwrap();
         assert_eq!(app.counter, 0);
 
         let mut app = App::default();
-        app.handle_key_event(KeyCode::Char('q').into());
+        app.handle_key_event(KeyCode::Char('q').into()).unwrap();
         assert!(app.exit);
 
         Ok(())
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn handle_key_event_panic() {
+        let mut app = App::default();
+        let _ = app.handle_key_event(KeyCode::Left.into());
+    }
+
+    #[test]
+    fn handle_key_event_overflow() {
+        let mut app = App::default();
+        app.counter = 23;
+        assert!(app.handle_key_event(KeyCode::Right.into()).is_ok());
+        assert!(app.handle_key_event(KeyCode::Right.into()).is_ok());
+        assert_eq!(
+            app.handle_key_event(KeyCode::Right.into())
+                .unwrap_err()
+                .to_string(),
+            "counter overflow"
+        );
     }
 }
